@@ -53,4 +53,51 @@ router.delete('/:id', (req: any, res) => {
   }
 });
 
+router.post('/apply', (req: any, res) => {
+  try {
+    const { examName, examDate, aiPlanText } = req.body;
+    const planId = crypto.randomUUID();
+
+    // 1. Extract JSON tasks from the AI response
+    const jsonMatch = aiPlanText.match(/\[TASKS_JSON\]([\s\S]*?)\[\/TASKS_JSON\]/);
+    let tasks: any[] = [];
+    if (jsonMatch && jsonMatch[1]) {
+      try {
+        tasks = JSON.parse(jsonMatch[1].trim());
+      } catch (e) {
+        console.error('Failed to parse tasks JSON from AI response');
+      }
+    }
+
+    // 2. Save the Plan
+    db.prepare(`
+      INSERT INTO plans (id, userId, examName, examDate, aiPlanText)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(planId, req.user.userId, examName, examDate, aiPlanText);
+
+    // 3. Save the Tasks
+    const insertTask = db.prepare(`
+      INSERT INTO tasks (id, userId, title, subject, duration, date, priority)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const task of tasks) {
+      insertTask.run(
+        crypto.randomUUID(),
+        req.user.userId,
+        task.title || 'Study Session',
+        task.subject || 'General',
+        task.duration || 60,
+        task.date || new Date().toISOString().split('T')[0],
+        task.priority || 'Medium'
+      );
+    }
+
+    res.status(201).json({ message: 'Plan and tasks applied successfully', planId });
+  } catch (err: any) {
+    console.error('Apply Plan Error:', err.message);
+    res.status(500).json({ message: 'Error applying plan' });
+  }
+});
+
 export default router;

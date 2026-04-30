@@ -45,7 +45,10 @@ ${subjects.map((s: ISubject) => `- ${s.name} (Difficulty: ${s.difficulty})`).joi
 Syllabus/Topics:
 ${syllabusText || 'General subject knowledge.'}
 
-Format as beautiful Markdown text. Ensure it reads like a professional calendar.`;
+IMPORTANT: Provide the response in two parts.
+Part 1: A beautiful Markdown study plan for the user to read.
+Part 2: A JSON block at the very end wrapped in [TASKS_JSON]...[/TASKS_JSON] tags containing an array of tasks: 
+[{"title": "Chapter 1 Review", "subject": "Math", "date": "YYYY-MM-DD", "duration": 60, "priority": "High"}]`;
 
   try {
     // Using native fetch for Gemini to avoid dependency issues
