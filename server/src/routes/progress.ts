@@ -1,60 +1,38 @@
 import express from 'express';
-import User from '../models/User';
-import Session from '../models/Session';
-import Achievement from '../models/Achievement';
+import { protect } from '../middleware/auth';
+import db from '../config/database';
+import crypto from 'crypto';
 
 const router = express.Router();
 
-router.get('/summary', async (req, res) => {
-  try {
-    // Mock user ID for now
-    const user = await User.findOne();
-    if (!user) return res.status(404).json({ message: 'User not found' });
-    
-    res.json({
-      xp: user.xp,
-      level: user.level,
-      streak: 5,
-      stats: { tasksDone: 10, pomodoros: 4 }
-    });
-  } catch(err) {
-    res.status(500).json({ message: 'Server Error' });
-  }
-});
+router.use(protect);
 
-router.post('/xp', async (req, res) => {
+router.get('/sessions', (req: any, res) => {
   try {
-    const { amount, reason } = req.body;
-    let user = await User.findOne();
-    if (user) {
-      user.xp += amount;
-      user.level = Math.floor(user.xp / 100) + 1;
-      await user.save();
-      res.json({ xp: user.xp, level: user.level, reason });
-    } else {
-      res.status(404).json({ message: 'User not found' });
-    }
+    const sessions = db.prepare('SELECT * FROM sessions WHERE userId = ? ORDER BY date DESC').all(req.user.userId);
+    res.json(sessions.map((s: any) => ({ ...s, _id: s.id })));
   } catch(err) {
     res.status(500).json({ message: 'Error' });
   }
 });
 
-router.get('/achievements', async (req, res) => {
+router.post('/sessions', (req: any, res) => {
   try {
-    const achievements = await Achievement.find();
-    res.json(achievements);
-  } catch(err) {
-    res.status(500).json({ message: 'Error' });
-  }
-});
+    const id = crypto.randomUUID();
+    const { subject, duration, date } = req.body;
 
-router.post('/sessions', async (req, res) => {
-  try {
-    const session = new Session(req.body);
-    await session.save();
-    res.status(201).json(session);
+    db.prepare(`
+      INSERT INTO sessions (id, userId, subject, duration, date)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(id, req.user.userId, subject, duration, date || new Date().toISOString().split('T')[0]);
+
+    // Update User XP
+    db.prepare('UPDATE users SET xp = xp + ? WHERE id = ?').run(Math.floor(duration / 10), req.user.userId);
+
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+    res.status(201).json({ ...session as object, _id: id });
   } catch(err) {
-    res.status(400).json({ message: 'Bad Request' });
+    res.status(400).json({ message: 'Error' });
   }
 });
 

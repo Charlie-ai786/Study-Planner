@@ -1,6 +1,8 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
-import User from '../models/User';
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+import db from '../config/database';
 
 const router = express.Router();
 
@@ -14,33 +16,28 @@ router.post('/register', async (req, res) => {
   try {
     const { name, email, password, goal } = req.body;
 
-    const userExists = await User.findOne({ email });
+    // Check if user exists
+    const userExists = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
     if (userExists) {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    const user = await User.create({
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const userId = crypto.randomUUID();
+
+    db.prepare(`
+      INSERT INTO users (id, name, email, password, goal)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(userId, name, email, hashedPassword, goal);
+
+    const token = generateToken(userId);
+
+    res.json({
+      _id: userId,
       name,
       email,
-      password,
-      goal,
-    });
-
-    const token = generateToken(user._id.toString());
-
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
-
-    res.status(201).json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      level: user.level,
-      xp: user.xp,
+      level: 1,
+      xp: 0,
       token,
     });
   } catch (error: any) {
@@ -52,19 +49,13 @@ router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const user = await User.findOne({ email });
-    if (user && (await user.comparePassword(password))) {
-      const token = generateToken(user._id.toString());
+    const user: any = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    
+    if (user && (await bcrypt.compare(password, user.password))) {
+      const token = generateToken(user.id);
       
-      res.cookie('token', token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: 30 * 24 * 60 * 60 * 1000,
-      });
-
       res.json({
-        _id: user._id,
+        _id: user.id,
         name: user.name,
         email: user.email,
         level: user.level,
@@ -80,10 +71,6 @@ router.post('/login', async (req, res) => {
 });
 
 router.post('/logout', (req, res) => {
-  res.cookie('token', '', {
-    httpOnly: true,
-    expires: new Date(0),
-  });
   res.json({ message: 'Logged out successfully' });
 });
 

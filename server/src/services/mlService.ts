@@ -1,4 +1,4 @@
-import brain from 'brain.js';
+const brain = require('brain.js');
 
 interface TrainingData {
   input: {

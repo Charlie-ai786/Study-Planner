@@ -1,51 +1,40 @@
 import express from 'express';
+import { protect } from '../middleware/auth';
+import db from '../config/database';
 
 const router = express.Router();
 
-router.get('/heatmap', async (req, res) => {
+router.use(protect);
+
+// Matches Frontend: fetch(`${API_URL}/analytics/subjects`)
+router.get('/subjects', (req: any, res) => {
   try {
-    // Return mock heatmap data
-    const data = Array.from({ length: 28 }).map((_, i) => ({
-      date: new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString(),
-      count: Math.floor(Math.random() * 5)
-    }));
+    const data = db.prepare(`
+      SELECT subject as subject, SUM(duration) / 60.0 as hours 
+      FROM sessions 
+      WHERE userId = ? 
+      GROUP BY subject
+    `).all(req.user.userId);
     res.json(data);
-  } catch(err) {
-    res.status(500).json({ message: 'Error' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching subjects' });
   }
 });
 
-router.get('/subjects', async (req, res) => {
+// Matches Frontend: fetch(`${API_URL}/analytics/heatmap`)
+router.get('/heatmap', (req: any, res) => {
   try {
-    res.json([
-      { subject: 'Physics', hours: 45 },
-      { subject: 'Math', hours: 30 },
-      { subject: 'History', hours: 15 }
-    ]);
-  } catch(err) {
-    res.status(500).json({ message: 'Error' });
-  }
-});
-
-router.get('/timeline', async (req, res) => {
-  try {
-    res.json([
-      { date: '2023-10-01', hours: 2 },
-      { date: '2023-10-02', hours: 4 }
-    ]);
-  } catch(err) {
-    res.status(500).json({ message: 'Error' });
-  }
-});
-
-router.get('/prediction', async (req, res) => {
-  try {
-    res.json({
-      predictedDaysLeft: 38,
-      message: 'On track to finish 4 days early!'
-    });
-  } catch(err) {
-    res.status(500).json({ message: 'Error' });
+    const data = db.prepare(`
+      SELECT date as date, SUM(duration) / 60.0 as count 
+      FROM sessions 
+      WHERE userId = ? 
+      GROUP BY date
+      ORDER BY date ASC
+      LIMIT 14
+    `).all(req.user.userId);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching heatmap' });
   }
 });
 
