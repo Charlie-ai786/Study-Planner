@@ -1,102 +1,125 @@
 import express from 'express';
-import { protect } from '../middleware/auth';
-import db from '../config/database';
-import crypto from 'crypto';
+import db from '../db';
+import { authenticateToken } from '../middleware/auth';
 
 const router = express.Router();
 
-router.use(protect);
-
-router.get('/', (req: any, res) => {
-  try {
-    const plans = db.prepare('SELECT * FROM plans WHERE userId = ?').all(req.user.userId);
-    res.json(plans.map((p: any) => ({ ...p, _id: p.id })));
-  } catch(err) {
-    res.status(500).json({ message: 'Server Error' });
+function parsePlanIntoDays(planText: string) {
+  const days = [];
+  const lines = planText.split('\n');
+  let currentDay: any = null;
+  for (const line of lines) {
+    const dayMatch = line.match(/^Day\s+(\d+)\s*\|?\s*Phase?:?\s*(.+)?/i);
+    if (dayMatch) {
+      if (currentDay) days.push(currentDay);
+      currentDay = { day: parseInt(dayMatch[1]), phase: dayMatch[2]?.trim() || 'Study', sessions: [] };
+    } else if (currentDay && line.trim().startsWith('-')) {
+      currentDay.sessions.push(line.trim().replace(/^-\s*/, ''));
+    }
   }
-});
+  if (currentDay) days.push(currentDay);
+  return days;
+}
 
-router.post('/', (req: any, res) => {
+function mapPlan(plan: any) {
+  if (!plan) return null;
+  return {
+    id: plan.id,
+    userId: plan.user_id,
+    planText: plan.plan_text,
+    examName: plan.exam_name,
+    days: plan.days,
+    subjects: JSON.parse(plan.subjects || '[]'),
+    slots: JSON.parse(plan.slots || '[]'),
+    routineConfig: JSON.parse(plan.routine_config || '{}'),
+    parsedDays: JSON.parse(plan.parsed_days || '[]'),
+    isActive: !!plan.is_active,
+    createdAt: plan.created_at
+  };
+}
+
+// SAVE PLAN
+router.post('/save', authenticateToken, (req: any, res) => {
   try {
-    const id = crypto.randomUUID();
-    const { examName, examDate, aiPlanText } = req.body;
+    const { planText, examName, days, subjects, slots, routineConfig } = req.body;
 
-    db.prepare(`
-      INSERT INTO plans (id, userId, examName, examDate, aiPlanText)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, req.user.userId, examName, examDate, aiPlanText);
-
-    const plan = db.prepare('SELECT * FROM plans WHERE id = ?').get(id);
-    res.status(201).json({ ...plan as object, _id: id });
-  } catch(err) {
-    res.status(400).json({ message: 'Bad Request' });
-  }
-});
-
-router.get('/:id', (req: any, res) => {
-  try {
-    const plan = db.prepare('SELECT * FROM plans WHERE id = ? AND userId = ?').get(req.params.id, req.user.userId);
-    if (!plan) return res.status(404).json({ message: 'Not Found' });
-    res.json({ ...plan as object, _id: (plan as any).id });
-  } catch(err) {
-    res.status(404).json({ message: 'Not Found' });
-  }
-});
-
-router.delete('/:id', (req: any, res) => {
-  try {
-    const result = db.prepare('DELETE FROM plans WHERE id = ? AND userId = ?').run(req.params.id, req.user.userId);
-    if (result.changes === 0) return res.status(404).json({ message: 'Not Found' });
-    res.json({ message: 'Deleted' });
-  } catch(err) {
-    res.status(500).json({ message: 'Error' });
-  }
-});
-
-router.post('/apply', (req: any, res) => {
-  try {
-    const { examName, examDate, aiPlanText } = req.body;
-    const planId = crypto.randomUUID();
-
-    // 1. Extract JSON tasks from the AI response
-    const jsonMatch = aiPlanText.match(/\[TASKS_JSON\]([\s\S]*?)\[\/TASKS_JSON\]/);
-    let tasks: any[] = [];
-    if (jsonMatch && jsonMatch[1]) {
-      try {
-        tasks = JSON.parse(jsonMatch[1].trim());
-      } catch (e) {
-        console.error('Failed to parse tasks JSON from AI response');
-      }
+    if (!planText || !examName || !days) {
+      return res.status(400).json({ success: false, message: 'planText, examName, days are required' });
     }
 
-    // 2. Save the Plan
-    db.prepare(`
-      INSERT INTO plans (id, userId, examName, examDate, aiPlanText)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(planId, req.user.userId, examName, examDate, aiPlanText);
+    const userId = req.user.id;
+    const parsedDays = parsePlanIntoDays(planText);
 
-    // 3. Save the Tasks
-    const insertTask = db.prepare(`
-      INSERT INTO tasks (id, userId, title, subject, duration, date, priority)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
+    // Deactivate all old plans
+    db.prepare('UPDATE plans SET is_active = 0 WHERE user_id = ?').run(userId);
 
-    for (const task of tasks) {
-      insertTask.run(
-        crypto.randomUUID(),
-        req.user.userId,
-        task.title || 'Study Session',
-        task.subject || 'General',
-        task.duration || 60,
-        task.date || new Date().toISOString().split('T')[0],
-        task.priority || 'Medium'
-      );
-    }
+    // Insert new plan
+    const result = db.prepare(`
+      INSERT INTO plans (user_id, plan_text, exam_name, days, subjects, slots, routine_config, parsed_days, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `).run(
+      userId,
+      planText,
+      examName,
+      Number(days),
+      JSON.stringify(subjects || []),
+      JSON.stringify(slots || []),
+      JSON.stringify(routineConfig || {}),
+      JSON.stringify(parsedDays)
+    );
 
-    res.status(201).json({ message: 'Plan and tasks applied successfully', planId });
+    // Update user active plan
+    db.prepare('UPDATE users SET active_plan_id = ?, exam_name = ?, exam_days = ? WHERE id = ?')
+      .run(result.lastInsertRowid, examName, Number(days), userId);
+
+    // Fetch and return saved plan
+    const saved = db.prepare('SELECT * FROM plans WHERE id = ?').get(result.lastInsertRowid) as any;
+    
+    return res.status(200).json({ success: true, plan: mapPlan(saved) });
   } catch (err: any) {
-    console.error('Apply Plan Error:', err.message);
-    res.status(500).json({ message: 'Error applying plan' });
+    console.error('Save plan error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET ACTIVE PLAN
+router.get('/active', authenticateToken, (req: any, res) => {
+  try {
+    const plan = db.prepare(
+      'SELECT * FROM plans WHERE user_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 1'
+    ).get(req.user.id) as any;
+
+    if (!plan) {
+      return res.status(404).json({ success: false, message: 'No active plan found' });
+    }
+
+    return res.status(200).json({ success: true, plan: mapPlan(plan) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET ALL PLANS
+router.get('/', authenticateToken, (req: any, res) => {
+  try {
+    const plans = db.prepare(
+      'SELECT * FROM plans WHERE user_id = ? ORDER BY created_at DESC'
+    ).all(req.user.id) as any[];
+
+    return res.status(200).json({ success: true, plans: plans.map(mapPlan) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// DELETE PLAN
+router.delete('/:id', authenticateToken, (req: any, res) => {
+  try {
+    db.prepare('DELETE FROM plans WHERE id = ? AND user_id = ?')
+      .run(req.params.id, req.user.id);
+    return res.status(200).json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 

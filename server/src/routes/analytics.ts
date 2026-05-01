@@ -1,10 +1,10 @@
 import express from 'express';
-import { protect } from '../middleware/auth';
-import db from '../config/database';
+import { authenticateToken } from '../middleware/auth';
+import db from '../db';
 
 const router = express.Router();
 
-router.use(protect);
+router.use(authenticateToken);
 
 // Matches Frontend: fetch(`${API_URL}/analytics/subjects`)
 router.get('/subjects', (req: any, res) => {
@@ -12,9 +12,9 @@ router.get('/subjects', (req: any, res) => {
     const data = db.prepare(`
       SELECT subject as subject, SUM(duration) / 60.0 as hours 
       FROM sessions 
-      WHERE userId = ? 
+      WHERE user_id = ? 
       GROUP BY subject
-    `).all(req.user.userId);
+    `).all(req.user.id);
     res.json(data);
   } catch (err) {
     res.status(500).json({ message: 'Error fetching subjects' });
@@ -27,11 +27,11 @@ router.get('/heatmap', (req: any, res) => {
     const data = db.prepare(`
       SELECT date as date, SUM(duration) / 60.0 as count 
       FROM sessions 
-      WHERE userId = ? 
+      WHERE user_id = ? 
       GROUP BY date
       ORDER BY date ASC
       LIMIT 14
-    `).all(req.user.userId);
+    `).all(req.user.id);
     res.json(data);
   } catch (err) {
     res.status(500).json({ message: 'Error fetching heatmap' });

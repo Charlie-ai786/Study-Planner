@@ -1,11 +1,11 @@
 import express from 'express';
-import { protect } from '../middleware/auth';
+import { authenticateToken } from '../middleware/auth';
 import { streamStudyPlan, getSmartTip } from '../services/geminiService';
 import { parseSyllabus } from '../services/nlpService';
 
 const router = express.Router();
 
-router.use(protect);
+router.use(authenticateToken);
 
 router.post('/generate-plan', async (req, res) => {
   const { examName, examDate, subjects, syllabusText, routine, stats } = req.body;

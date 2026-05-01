@@ -1,38 +1,84 @@
 import express from 'express';
-import { protect } from '../middleware/auth';
-import db from '../config/database';
-import crypto from 'crypto';
+import db from '../db';
+import { authenticateToken } from '../middleware/auth';
 
 const router = express.Router();
 
-router.use(protect);
-
-router.get('/sessions', (req: any, res) => {
+// GET achievements
+router.get('/achievements', authenticateToken, (req: any, res) => {
   try {
-    const sessions = db.prepare('SELECT * FROM sessions WHERE userId = ? ORDER BY date DESC').all(req.user.userId);
-    res.json(sessions.map((s: any) => ({ ...s, _id: s.id })));
-  } catch(err) {
-    res.status(500).json({ message: 'Error' });
+    const achievements = db.prepare(
+      'SELECT achievement_id as id, unlocked_at FROM achievements WHERE user_id = ?'
+    ).all(req.user.id);
+    
+    // Map to what frontend expects (e.g. icon, title)
+    // For now returning the IDs
+    res.json(achievements);
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
   }
 });
 
-router.post('/sessions', (req: any, res) => {
+// GET user stats
+router.get('/user-stats', authenticateToken, (req: any, res) => {
   try {
-    const id = crypto.randomUUID();
-    const { subject, duration, date } = req.body;
+    const progress = db.prepare('SELECT * FROM progress WHERE user_id = ?').get(req.user.id) as any;
+    if (!progress) return res.status(404).json({ message: 'Stats not found' });
+    
+    res.json({
+      xp: progress.xp,
+      level: Math.floor(progress.xp / 100) + 1,
+      streak: progress.streak,
+      longestStreak: progress.longest_streak,
+      totalTasks: progress.total_tasks,
+      totalSessions: progress.total_sessions
+    });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+});
 
-    db.prepare(`
-      INSERT INTO sessions (id, userId, subject, duration, date)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, req.user.userId, subject, duration, date || new Date().toISOString().split('T')[0]);
+// GET full progress summary
+router.get('/summary', authenticateToken, (req: any, res) => {
+  try {
+    const progress = db.prepare('SELECT * FROM progress WHERE user_id = ?').get(req.user.id) as any;
+    if (!progress) return res.status(404).json({ success: false, message: 'No progress found' });
 
-    // Update User XP
-    db.prepare('UPDATE users SET xp = xp + ? WHERE id = ?').run(Math.floor(duration / 10), req.user.userId);
+    const achievements = db.prepare(
+      'SELECT * FROM achievements WHERE user_id = ? ORDER BY unlocked_at DESC'
+    ).all(req.user.id);
 
-    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
-    res.status(201).json({ ...session as object, _id: id });
-  } catch(err) {
-    res.status(400).json({ message: 'Error' });
+    return res.status(200).json({ 
+      success: true, 
+      progress: {
+        ...progress,
+        level: Math.floor(progress.xp / 100) + 1,
+        xpToNextLevel: 100 - (progress.xp % 100),
+        achievements
+      }
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ADD XP manually (Pomodoro session etc)
+router.post('/xp', authenticateToken, (req: any, res) => {
+  try {
+    const { amount, reason } = req.body;
+    const xp = Math.abs(Number(amount)) || 10;
+
+    db.prepare('UPDATE progress SET xp = xp + ? WHERE user_id = ?').run(xp, req.user.id);
+
+    if (reason === 'pomodoro') {
+      db.prepare('UPDATE progress SET total_sessions = total_sessions + 1 WHERE user_id = ?')
+        .run(req.user.id);
+    }
+
+    const progress = db.prepare('SELECT * FROM progress WHERE user_id = ?').get(req.user.id) as any;
+    return res.status(200).json({ success: true, xp: progress.xp, amount: xp });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 

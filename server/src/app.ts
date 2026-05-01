@@ -5,7 +5,10 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
-import { initDB } from './config/database';
+
+// Import db first — creates tables on startup
+import './db';
+
 import authRoutes from './routes/auth';
 import aiRoutes from './routes/ai';
 import plansRoutes from './routes/plans';
@@ -13,33 +16,21 @@ import tasksRoutes from './routes/tasks';
 import progressRoutes from './routes/progress';
 import analyticsRoutes from './routes/analytics';
 
-// Start SQLite
-initDB();
-
 const PORT = process.env.PORT || 5000;
 const app = express();
-
-app.use(cors({
-  origin: [
-    process.env.CLIENT_URL || 'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'http://localhost:5000'
-  ],
-  credentials: true,
-}));
 
 app.use(helmet({
   crossOriginResourcePolicy: false,
   contentSecurityPolicy: false,
 }));
 
-app.use(express.json());
-app.use(cookieParser());
+app.use(cors({ 
+  origin: process.env.CLIENT_URL || 'http://localhost:5173', 
+  credentials: true 
+}));
 
-// Basic health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
-});
+app.use(express.json({ limit: '10mb' }));
+app.use(cookieParser());
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -49,8 +40,18 @@ app.use('/api/tasks', tasksRoutes);
 app.use('/api/progress', progressRoutes);
 app.use('/api/analytics', analyticsRoutes);
 
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', db: 'sqlite3' });
+});
+
+// Error handling
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error(err.stack);
+  res.status(500).json({ success: false, message: 'Internal server error' });
+});
+
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log('StudyFlow server running on port', PORT);
 });
 
 export default app;

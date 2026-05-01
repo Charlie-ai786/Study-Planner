@@ -1,77 +1,99 @@
 import express from 'express';
-import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import crypto from 'crypto';
-import db from '../config/database';
+import jwt from 'jsonwebtoken';
+import db from '../db';
 
 const router = express.Router();
 
-const generateToken = (userId: string) => {
-  return jwt.sign({ userId }, process.env.JWT_SECRET || 'secret', {
-    expiresIn: '30d',
-  });
-};
+function mapUser(user: any, progress: any = null) {
+  if (!user) return null;
+  return {
+    _id: user.id,
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    university: user.university,
+    level: progress ? Math.floor(progress.xp / 100) + 1 : (user.level || 1),
+    xp: progress ? progress.xp : (user.xp || 0),
+    examName: user.exam_name,
+    examDays: user.exam_days
+  };
+}
 
+// REGISTER
 router.post('/register', async (req, res) => {
   try {
-    const { name, email, password, goal } = req.body;
-
-    // Check if user exists
-    const userExists = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-    if (userExists) {
-      return res.status(400).json({ message: 'User already exists' });
+    const { name, email, password, university } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ success: false, message: 'Name, email and password required' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const userId = crypto.randomUUID();
+    // Check email exists
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    if (existing) {
+      return res.status(409).json({ success: false, message: 'Email already registered' });
+    }
 
-    db.prepare(`
-      INSERT INTO users (id, name, email, password, goal)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(userId, name, email, hashedPassword, goal);
+    const hashed = await bcrypt.hash(password, 10);
 
-    const token = generateToken(userId);
+    const result = db.prepare(
+      'INSERT INTO users (name, email, password, university) VALUES (?, ?, ?, ?)'
+    ).run(name, email, hashed, university || '');
 
-    res.json({
-      _id: userId,
-      name,
-      email,
-      level: 1,
-      xp: 0,
+    const userId = result.lastInsertRowid;
+
+    // Create progress row for new user
+    db.prepare(
+      'INSERT INTO progress (user_id) VALUES (?)'
+    ).run(userId);
+
+    const progress = db.prepare('SELECT * FROM progress WHERE user_id = ?').get(userId);
+    const token = jwt.sign({ id: userId, email }, process.env.JWT_SECRET || 'secret', { expiresIn: '7d' });
+
+    return res.status(201).json({ 
+      success: true, 
       token,
+      user: mapUser({ id: userId, name, email, university }, progress)
     });
-  } catch (error: any) {
-    res.status(500).json({ message: error.message });
+  } catch (err: any) {
+    console.error('Register error:', err);
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 
+// LOGIN
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-
-    const user: any = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
-    
-    if (user && (await bcrypt.compare(password, user.password))) {
-      const token = generateToken(user.id);
-      
-      res.json({
-        _id: user.id,
-        name: user.name,
-        email: user.email,
-        level: user.level,
-        xp: user.xp,
-        token,
-      });
-    } else {
-      res.status(401).json({ message: 'Invalid email or password' });
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: 'Email and password required' });
     }
-  } catch (error: any) {
-    res.status(500).json({ message: error.message });
-  }
-});
 
-router.post('/logout', (req, res) => {
-  res.json({ message: 'Logged out successfully' });
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'Invalid email or password' });
+    }
+
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
+      return res.status(401).json({ success: false, message: 'Invalid email or password' });
+    }
+
+    const progress = db.prepare('SELECT * FROM progress WHERE user_id = ?').get(user.id);
+    const token = jwt.sign(
+      { id: user.id, email: user.email }, 
+      process.env.JWT_SECRET || 'secret', 
+      { expiresIn: '7d' }
+    );
+
+    return res.status(200).json({
+      success: true,
+      token,
+      user: mapUser(user, progress)
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 export default router;
